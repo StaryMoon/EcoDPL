@@ -239,6 +239,7 @@ def main():
             model.train()
             running_loss = 0.0
             steps_this_epoch = 0
+            optimizer_steps = 0
             progress = tqdm(train_loader, desc=f"{task} epoch {epoch}/{args.epochs_per_task}", disable=args.no_progress)
             for step, (degraded, clean) in enumerate(progress, start=1):
                 degraded = degraded.to(device, non_blocking=True)
@@ -252,23 +253,28 @@ def main():
                     restored, aux = model(degraded, return_aux=True)
                     restored = crop_to_shape(restored, original_shape)
                     loss = args.alpha * F.smooth_l1_loss(restored, clean)
-                    if perceptual is not None and args.perceptual_weight > 0:
-                        loss = loss + args.perceptual_weight * perceptual(restored, clean)
                     loss = loss + args.zeta * aux["image_distance"] + args.eta * aux["feature_distance"]
                     loss = loss + args.prompt_reg * model.prompt_regularization_loss()
                     if task_index > 0:
                         loss = loss + args.omega * regularizer.penalty(model)
+                if perceptual is not None and args.perceptual_weight > 0:
+                    with autocast_context(device, False):
+                        loss = loss + args.perceptual_weight * perceptual(restored.float(), clean.float())
 
                 if scaler.is_enabled():
+                    scale_before = scaler.get_scale()
                     scaler.scale(loss).backward()
                     scaler.unscale_(optimizer)
                     torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                     scaler.step(optimizer)
                     scaler.update()
+                    if scaler.get_scale() >= scale_before:
+                        optimizer_steps += 1
                 else:
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                     optimizer.step()
+                    optimizer_steps += 1
 
                 running_loss += loss.item()
                 steps_this_epoch = step
@@ -276,7 +282,8 @@ def main():
                 if args.max_steps_per_epoch is not None and step >= args.max_steps_per_epoch:
                     break
 
-            scheduler.step()
+            if optimizer_steps > 0:
+                scheduler.step()
             global_epoch += 1
 
             row = {
