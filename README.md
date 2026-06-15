@@ -9,11 +9,9 @@ The release training path is centered on:
 - `eval_ecodpl_release.py`: tiled full-image evaluation for large test images.
 - `utils/derain_release.py`: dataset loading, metrics, padding, and tiled inference helpers.
 
-By default, the release uses a non-destructive Grad-Tuner mode. It protects
-frequently selected prompt components after a task instead of rewriting prompt
-values with low-rank compression, which avoids quality drops from destructive
-prompt reconstruction. The legacy SVD compression path is still available for
-ablation via `--grad-tuner-mode svd`.
+Grad-Tuner uses frequency-guided prompt dictionary compacting after each task,
+with the prompt pool frequency table used to preserve high-utility components
+and update the compact prompt dictionary.
 
 ## Environment
 

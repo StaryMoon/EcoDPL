@@ -170,7 +170,12 @@ def autocast_context(device, enabled):
 
 def load_compatible_state(model, state):
     result = model.load_state_dict(state, strict=False)
-    allowed_missing = {"image_fuser.protected", "feature_fuser.protected"}
+    allowed_missing = {
+        "image_fuser.protected",
+        "feature_fuser.protected",
+        "image_fuser.dictionary",
+        "feature_fuser.dictionary",
+    }
     unexpected = list(result.unexpected_keys)
     missing = [key for key in result.missing_keys if key not in allowed_missing]
     if missing or unexpected:
@@ -266,7 +271,7 @@ def maybe_consolidate_resume_state(args, model, regularizer, device, optimizer, 
         return
     train_loader, _ = build_loaders(args, args.consolidate_resume_task)
     if args.grad_tune_resume_state:
-        model.grad_tune_prompts(mode=args.grad_tuner_mode)
+        model.grad_tune_prompts()
     regularizer.consolidate(
         model,
         train_loader,
@@ -326,7 +331,6 @@ def main():
     parser.add_argument("--prompt-reg", type=float, default=1e-4)
     parser.add_argument("--num-prompts", type=int, default=100)
     parser.add_argument("--grad-tuner-components", type=int, default=25)
-    parser.add_argument("--grad-tuner-mode", choices=["protect", "svd", "none"], default="protect")
     parser.set_defaults(freeze_protected_prompts=True)
     parser.add_argument("--freeze-protected-prompts", dest="freeze_protected_prompts", action="store_true")
     parser.add_argument("--no-freeze-protected-prompts", dest="freeze_protected_prompts", action="store_false")
@@ -532,7 +536,7 @@ def main():
             load_model_weights(best_path, model, device)
             print(f"[checkpoint] restored {best_path} before consolidation", flush=True)
 
-        model.grad_tune_prompts(mode=args.grad_tuner_mode)
+        model.grad_tune_prompts()
         regularizer.consolidate(
             model,
             train_loader,

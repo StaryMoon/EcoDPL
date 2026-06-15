@@ -18,7 +18,12 @@ from utils.derain_release import (
 
 def load_compatible_state(model, state):
     result = model.load_state_dict(state, strict=False)
-    allowed_missing = {"image_fuser.protected", "feature_fuser.protected"}
+    allowed_missing = {
+        "image_fuser.protected",
+        "feature_fuser.protected",
+        "image_fuser.dictionary",
+        "feature_fuser.dictionary",
+    }
     unexpected = list(result.unexpected_keys)
     missing = [key for key in result.missing_keys if key not in allowed_missing]
     if missing or unexpected:

@@ -1,3 +1,5 @@
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -23,12 +25,14 @@ class PromptFuser(nn.Module):
         self.num_prompts = num_prompts
         self.query_dim = query_dim
         self.temperature = temperature
+        value_dim = math.prod(value_shape)
 
         self.keys = nn.Parameter(torch.randn(num_prompts, query_dim) * 0.02)
         self.attention = nn.Parameter(torch.ones(num_prompts, query_dim))
         self.values = nn.Parameter(torch.randn(num_prompts, *value_shape) * 0.02)
         self.register_buffer("frequency", torch.ones(num_prompts), persistent=True)
         self.register_buffer("protected", torch.zeros(num_prompts, dtype=torch.bool), persistent=True)
+        self.register_buffer("dictionary", torch.zeros(num_prompts, value_dim), persistent=True)
         self.register_buffer("active", torch.ones(num_prompts, dtype=torch.bool), persistent=False)
 
     def forward(self, query, update_frequency=False):
@@ -75,38 +79,54 @@ class PromptFuser(nn.Module):
         self.active.fill_(True)
 
     @torch.no_grad()
-    def grad_tune(self, keep_components=25, mode="protect"):
-        """Tune prompt bookkeeping without harming learned prompt values.
-
-        The default release mode is deliberately non-destructive: it marks the
-        most-used prompt components as protected, which gives the trainer a
-        stable old-task prompt bank for continual learning. A legacy SVD mode is
-        kept for ablation, but it is not the default because low-rank rewriting
-        can reduce restoration quality.
-        """
-
+    def grad_tune(self, keep_components=25):
         keep_components = max(1, min(int(keep_components), self.num_prompts))
-        if mode == "none":
-            return
-        if mode == "protect":
-            top_indices = torch.topk(self.frequency, k=keep_components, largest=True).indices
-            self.protected.zero_()
-            self.protected[top_indices] = True
-            return
-        if mode != "svd":
-            raise ValueError(f"Unknown Grad-Tuner mode: {mode}")
-
         flat = self.values.data.reshape(self.num_prompts, -1)
+        frequency = self.frequency.float()
+        top_indices = torch.topk(frequency, k=keep_components, largest=True).indices
+        self.protected.zero_()
+        self.protected[top_indices] = True
+
         mean = flat.mean(dim=0, keepdim=True)
-        centered = flat - mean
+        data = flat - mean
+        atoms = F.normalize(data[top_indices].clone(), dim=1, eps=1e-12)
+        codes = torch.zeros(self.num_prompts, keep_components, device=flat.device, dtype=flat.dtype)
+        rows = torch.arange(self.num_prompts, device=flat.device)
 
-        try:
-            _, _, v = torch.pca_lowrank(centered, q=keep_components, center=False)
-            compact = centered @ v @ v.t() + mean
-        except RuntimeError:
-            compact = flat
+        for _ in range(4):
+            scores = data @ atoms.t()
+            assignment = scores.abs().argmax(dim=1)
+            codes.zero_()
+            codes[rows, assignment] = scores[rows, assignment]
+            reconstruction = codes @ atoms
 
-        self.values.data.copy_(compact.reshape_as(self.values.data))
+            for atom_index in range(keep_components):
+                mask = assignment == atom_index
+                if not bool(mask.any()):
+                    residual_norm = (data - reconstruction).pow(2).sum(dim=1)
+                    atoms[atom_index] = F.normalize(data[residual_norm.argmax()], dim=0, eps=1e-12)
+                    continue
+
+                residual = data[mask] - reconstruction[mask] + codes[mask, atom_index:atom_index + 1] * atoms[atom_index:atom_index + 1]
+                if residual.shape[0] == 1:
+                    atoms[atom_index] = F.normalize(residual[0], dim=0, eps=1e-12)
+                    codes[mask, atom_index] = residual[0].norm()
+                    continue
+
+                try:
+                    u, s, vh = torch.linalg.svd(residual, full_matrices=False)
+                except RuntimeError:
+                    continue
+                atoms[atom_index] = vh[0]
+                codes[mask, atom_index] = u[:, 0] * s[0]
+
+        compact = codes @ atoms + mean
+        usage = (frequency / frequency.max().clamp_min(1.0)).view(-1, 1)
+        blend = 0.35 * (1.0 - usage).clamp_min(0.1)
+
+        self.dictionary.zero_()
+        self.dictionary[:keep_components].copy_(atoms)
+        self.values.data.copy_((flat + blend * (compact - flat)).reshape_as(self.values.data))
 
     def zero_protected_grads(self):
         if not bool(self.protected.any()):
@@ -279,9 +299,9 @@ class EcoDPLPromptIR(nn.Module):
         )
 
     @torch.no_grad()
-    def grad_tune_prompts(self, mode="protect"):
-        self.image_fuser.grad_tune(self.grad_tuner_components, mode=mode)
-        self.feature_fuser.grad_tune(self.grad_tuner_components, mode=mode)
+    def grad_tune_prompts(self):
+        self.image_fuser.grad_tune(self.grad_tuner_components)
+        self.feature_fuser.grad_tune(self.grad_tuner_components)
 
     @torch.no_grad()
     def set_active_prompt_range(self, start=None, end=None):
