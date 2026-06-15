@@ -14,9 +14,10 @@ from einops import rearrange
 from einops.layers.torch import Rearrange
 import time
 import numpy as np
-import sys
-sys.path.append("/mnt/netdisk/liumh/workspace/PromptIR/")
-from compress_hyperprior import FeatureCompressor
+try:
+    from compress_hyperprior import FeatureCompressor
+except ImportError:
+    FeatureCompressor = None
 from torch.nn import CosineSimilarity
 
 
