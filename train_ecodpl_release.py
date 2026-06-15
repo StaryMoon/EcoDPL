@@ -170,6 +170,15 @@ def save_checkpoint(path, model, optimizer, scheduler, task_index, epoch, best_m
     )
 
 
+def load_model_weights(path, model, device):
+    try:
+        checkpoint = torch.load(path, map_location=device, weights_only=False)
+    except TypeError:
+        checkpoint = torch.load(path, map_location=device)
+    state = checkpoint["model"] if isinstance(checkpoint, dict) and "model" in checkpoint else checkpoint
+    model.load_state_dict(state, strict=True)
+
+
 def append_metric(path, row):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     exists = os.path.exists(path)
@@ -213,6 +222,9 @@ def main():
     parser.add_argument("--max-steps-per-epoch", type=int, default=None)
     parser.add_argument("--importance-batches", type=int, default=50)
     parser.add_argument("--importance-batch-size", type=int, default=4)
+    parser.set_defaults(restore_best_before_consolidation=True)
+    parser.add_argument("--restore-best-before-consolidation", dest="restore_best_before_consolidation", action="store_true")
+    parser.add_argument("--no-restore-best-before-consolidation", dest="restore_best_before_consolidation", action="store_false")
     parser.add_argument("--seed", type=int, default=123)
     parser.add_argument("--cuda", type=int, default=0)
     parser.add_argument("--no-perceptual", action="store_true")
@@ -344,6 +356,11 @@ def main():
                 best_metric,
                 regularizer,
             )
+
+        best_path = os.path.join(args.output_dir, f"best_{task}.pth")
+        if args.restore_best_before_consolidation and os.path.exists(best_path):
+            load_model_weights(best_path, model, device)
+            print(f"[checkpoint] restored {best_path} before consolidation", flush=True)
 
         model.grad_tune_prompts()
         regularizer.consolidate(
