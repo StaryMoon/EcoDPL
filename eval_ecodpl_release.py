@@ -16,6 +16,22 @@ from utils.derain_release import (
 )
 
 
+def load_compatible_state(model, state):
+    result = model.load_state_dict(state, strict=False)
+    allowed_missing = {"image_fuser.protected", "feature_fuser.protected"}
+    unexpected = list(result.unexpected_keys)
+    missing = [key for key in result.missing_keys if key not in allowed_missing]
+    if missing or unexpected:
+        raise RuntimeError(f"Checkpoint mismatch. Missing: {missing}; unexpected: {unexpected}")
+
+
+def parse_prompt_range(value):
+    if not value:
+        return None
+    start, end = value.split(":", 1)
+    return int(start) if start else None, int(end) if end else None
+
+
 @torch.no_grad()
 def main():
     parser = argparse.ArgumentParser(description="Evaluate EcoDPL deraining checkpoints.")
@@ -25,6 +41,7 @@ def main():
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--cuda", type=int, default=0)
     parser.add_argument("--num-prompts", type=int, default=100)
+    parser.add_argument("--prompt-range", default=None)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--tile-size", type=int, default=384)
     parser.add_argument("--tile-overlap", type=int, default=32)
@@ -38,7 +55,10 @@ def main():
     except TypeError:
         checkpoint = torch.load(args.checkpoint, map_location=device)
     state = checkpoint["model"] if isinstance(checkpoint, dict) and "model" in checkpoint else checkpoint
-    model.load_state_dict(state, strict=True)
+    load_compatible_state(model, state)
+    prompt_range = parse_prompt_range(args.prompt_range)
+    if prompt_range is not None:
+        model.set_active_prompt_range(*prompt_range)
     model.eval()
 
     dataset = ImagePairDataset(args.data_root, args.task)

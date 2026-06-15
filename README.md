@@ -9,6 +9,12 @@ The release training path is centered on:
 - `eval_ecodpl_release.py`: tiled full-image evaluation for large test images.
 - `utils/derain_release.py`: dataset loading, metrics, padding, and tiled inference helpers.
 
+By default, the release uses a non-destructive Grad-Tuner mode. It protects
+frequently selected prompt components after a task instead of rewriting prompt
+values with low-rank compression, which avoids quality drops from destructive
+prompt reconstruction. The legacy SVD compression path is still available for
+ablation via `--grad-tuner-mode svd`.
+
 ## Environment
 
 The code is tested with Python 3.8, PyTorch 2.x, CUDA, OpenCV, h5py, scikit-image, torchvision, einops, and tqdm.
@@ -70,6 +76,31 @@ python train_ecodpl_release.py \
 
 Remove `--no-perceptual` to use the paper-style perceptual term with `--perceptual-weight 0.04`.
 
+For stable Rain800 -> Rain100H reproduction from a completed Rain800
+checkpoint, the trainer also supports a lightweight optional retention anchor:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python train_ecodpl_release.py \
+  --data-root /path/to/Image-deraining \
+  --resume-state runs/ecodpl_r800_r100h/after_Rain800.pth \
+  --initial-task-index 1 \
+  --tasks Rain100H \
+  --epochs-per-task 1 \
+  --batch-size 18 \
+  --patch-size 100 \
+  --retention-tasks Rain800 \
+  --retention-weight 0.1 \
+  --retention-batch-size 4 \
+  --amp \
+  --no-perceptual \
+  --no-save-latest \
+  --skip-final-consolidation \
+  --output-dir runs/ecodpl_r800_r100h_retain01
+```
+
+This option is meant as a stability anchor for reproducible release training;
+leave it unset for a strictly rehearsal-free run.
+
 ## Evaluate
 
 ```bash
@@ -85,7 +116,15 @@ Use `--task Rain100H` or `--task Rain100L` for the corresponding test sets.
 
 ## Verification Status
 
-Training and full-image tiled evaluation are currently being verified on Titan8. The verified checkpoint metrics will be added here before public release.
+Current Titan8 verification uses the available 100-image test folders in
+`/mnt/netdisk/liumh/workspace/Image-deraining`:
+
+| Checkpoint | Rain800 PSNR/SSIM | Rain100H PSNR/SSIM |
+| --- | ---: | ---: |
+| `after_Rain800.pth` | 28.5474 / 0.8802 | - |
+| `Rain800 -> Rain100H`, retention weight 0.1, 1 epoch | 27.9934 / 0.8594 | 26.8908 / 0.8343 |
+
+Longer verification runs are still being checked before public release.
 
 ## License
 

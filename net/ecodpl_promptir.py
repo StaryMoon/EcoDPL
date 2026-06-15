@@ -28,6 +28,8 @@ class PromptFuser(nn.Module):
         self.attention = nn.Parameter(torch.ones(num_prompts, query_dim))
         self.values = nn.Parameter(torch.randn(num_prompts, *value_shape) * 0.02)
         self.register_buffer("frequency", torch.ones(num_prompts), persistent=True)
+        self.register_buffer("protected", torch.zeros(num_prompts, dtype=torch.bool), persistent=True)
+        self.register_buffer("active", torch.ones(num_prompts, dtype=torch.bool), persistent=False)
 
     def forward(self, query, update_frequency=False):
         if query.dim() != 2:
@@ -37,6 +39,8 @@ class PromptFuser(nn.Module):
         keys = F.normalize(self.keys, dim=1)
         attended = F.normalize(query[:, None, :] * self.attention[None, :, :], dim=2)
         logits = (attended * keys[None, :, :]).sum(dim=2) / self.temperature
+        if self.active is not None:
+            logits = logits.masked_fill(~self.active.to(logits.device)[None, :], -1e4)
 
         weights = F.softmax(logits, dim=1)
         fused = torch.einsum("bm,m...->b...", weights, self.values)
@@ -58,17 +62,40 @@ class PromptFuser(nn.Module):
         }
 
     @torch.no_grad()
-    def grad_tune(self, keep_components=25):
-        """Compact prompt values after a task with a stable SVD reconstruction.
+    def set_active_range(self, start=None, end=None):
+        self.active.zero_()
+        start = 0 if start is None else max(0, int(start))
+        end = self.num_prompts if end is None else min(self.num_prompts, int(end))
+        if end <= start:
+            raise ValueError(f"Invalid prompt range: {start}:{end}")
+        self.active[start:end] = True
 
-        The paper describes Grad-Tuner as dictionary learning / k-SVD. This
-        implementation keeps the release dependency-light: it performs low-rank
-        SVD reconstruction on prompt values and refreshes under-used components
-        from the compact basis. It is deterministic and safe to run after each
-        task; sklearn-based k-SVD can be added later without changing callers.
+    @torch.no_grad()
+    def clear_active_range(self):
+        self.active.fill_(True)
+
+    @torch.no_grad()
+    def grad_tune(self, keep_components=25, mode="protect"):
+        """Tune prompt bookkeeping without harming learned prompt values.
+
+        The default release mode is deliberately non-destructive: it marks the
+        most-used prompt components as protected, which gives the trainer a
+        stable old-task prompt bank for continual learning. A legacy SVD mode is
+        kept for ablation, but it is not the default because low-rank rewriting
+        can reduce restoration quality.
         """
 
         keep_components = max(1, min(int(keep_components), self.num_prompts))
+        if mode == "none":
+            return
+        if mode == "protect":
+            top_indices = torch.topk(self.frequency, k=keep_components, largest=True).indices
+            self.protected.zero_()
+            self.protected[top_indices] = True
+            return
+        if mode != "svd":
+            raise ValueError(f"Unknown Grad-Tuner mode: {mode}")
+
         flat = self.values.data.reshape(self.num_prompts, -1)
         mean = flat.mean(dim=0, keepdim=True)
         centered = flat - mean
@@ -80,6 +107,14 @@ class PromptFuser(nn.Module):
             compact = flat
 
         self.values.data.copy_(compact.reshape_as(self.values.data))
+
+    def zero_protected_grads(self):
+        if not bool(self.protected.any()):
+            return
+        mask = self.protected.to(self.keys.device)
+        for tensor in (self.keys, self.attention, self.values):
+            if tensor.grad is not None:
+                tensor.grad[mask] = 0
 
 
 class EcoDPLPromptIR(nn.Module):
@@ -244,6 +279,20 @@ class EcoDPLPromptIR(nn.Module):
         )
 
     @torch.no_grad()
-    def grad_tune_prompts(self):
-        self.image_fuser.grad_tune(self.grad_tuner_components)
-        self.feature_fuser.grad_tune(self.grad_tuner_components)
+    def grad_tune_prompts(self, mode="protect"):
+        self.image_fuser.grad_tune(self.grad_tuner_components, mode=mode)
+        self.feature_fuser.grad_tune(self.grad_tuner_components, mode=mode)
+
+    @torch.no_grad()
+    def set_active_prompt_range(self, start=None, end=None):
+        self.image_fuser.set_active_range(start, end)
+        self.feature_fuser.set_active_range(start, end)
+
+    @torch.no_grad()
+    def clear_active_prompt_range(self):
+        self.image_fuser.clear_active_range()
+        self.feature_fuser.clear_active_range()
+
+    def zero_protected_prompt_grads(self):
+        self.image_fuser.zero_protected_grads()
+        self.feature_fuser.zero_protected_grads()
