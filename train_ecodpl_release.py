@@ -1,5 +1,6 @@
 import argparse
 import csv
+import json
 import os
 from copy import deepcopy
 
@@ -179,6 +180,11 @@ def append_metric(path, row):
         writer.writerow(row)
 
 
+def log_metric(row):
+    parts = [f"{key}={value}" for key, value in row.items() if value != ""]
+    print("[metric] " + " ".join(parts), flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Train EcoDPL for continual image deraining.")
     parser.add_argument("--data-root", default="/mnt/netdisk/liumh/workspace/Image-deraining")
@@ -229,6 +235,9 @@ def main():
     scaler = build_grad_scaler(device, args.amp)
 
     metrics_path = os.path.join(args.output_dir, "metrics.csv")
+    os.makedirs(args.output_dir, exist_ok=True)
+    with open(os.path.join(args.output_dir, "args.json"), "w") as handle:
+        json.dump(vars(args), handle, indent=2, sort_keys=True)
     global_epoch = 0
 
     for task_index, task in enumerate(args.tasks):
@@ -324,6 +333,7 @@ def main():
                         regularizer,
                     )
             append_metric(metrics_path, row)
+            log_metric(row)
             save_checkpoint(
                 os.path.join(args.output_dir, "latest.pth"),
                 model,
