@@ -123,6 +123,7 @@ Current Titan8 verification uses the available 100-image test folders in
 | --- | ---: | ---: |
 | `after_Rain800.pth` | 28.5474 / 0.8802 | - |
 | `Rain800 -> Rain100H`, retention weight 0.1, 1 epoch | 27.9934 / 0.8594 | 26.8908 / 0.8343 |
+| `Rain800 -> Rain100H`, retention weight 0.1, 2 epochs | 28.2469 / 0.8651 | 27.5539 / 0.8520 |
 
 Longer verification runs are still being checked before public release.
 
