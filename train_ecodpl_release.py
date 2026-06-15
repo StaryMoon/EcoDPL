@@ -177,6 +177,38 @@ def load_model_weights(path, model, device):
         checkpoint = torch.load(path, map_location=device)
     state = checkpoint["model"] if isinstance(checkpoint, dict) and "model" in checkpoint else checkpoint
     model.load_state_dict(state, strict=True)
+    return checkpoint
+
+
+def load_regularizer_state(checkpoint, regularizer, device):
+    if not isinstance(checkpoint, dict):
+        return
+    star = checkpoint.get("regularizer_star")
+    importance = checkpoint.get("regularizer_importance")
+    if star is not None and importance is not None:
+        regularizer.star = [tensor.to(device) for tensor in star]
+        regularizer.importance = [tensor.to(device) for tensor in importance]
+
+
+def configure_trainable_parameters(model, scope):
+    if scope == "all":
+        for param in model.parameters():
+            param.requires_grad = True
+        return
+
+    trainable_markers = {
+        "prompts": ("image_fuser", "feature_fuser"),
+        "prompts_adapters": ("image_fuser", "feature_fuser", "image_prompt_adapter", "feature_prompt_adapter"),
+        "prompts_adapters_output": (
+            "image_fuser",
+            "feature_fuser",
+            "image_prompt_adapter",
+            "feature_prompt_adapter",
+            "output",
+        ),
+    }[scope]
+    for name, param in model.named_parameters():
+        param.requires_grad = any(marker in name for marker in trainable_markers)
 
 
 def append_metric(path, row):
@@ -199,6 +231,13 @@ def main():
     parser.add_argument("--data-root", default="/mnt/netdisk/liumh/workspace/Image-deraining")
     parser.add_argument("--output-dir", default="runs/ecodpl_release")
     parser.add_argument("--tasks", nargs="+", default=["Rain800", "Rain100H"])
+    parser.add_argument("--initial-task-index", type=int, default=0)
+    parser.add_argument("--resume-state", default=None)
+    parser.add_argument(
+        "--trainable-scope",
+        choices=["all", "prompts", "prompts_adapters", "prompts_adapters_output"],
+        default="all",
+    )
     parser.add_argument("--epochs-per-task", type=int, default=50)
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--patch-size", type=int, default=100)
@@ -235,7 +274,16 @@ def main():
     set_seed(args.seed)
     device = torch.device(f"cuda:{args.cuda}" if torch.cuda.is_available() else "cpu")
     model = EcoDPLPromptIR(num_prompts=args.num_prompts, grad_tuner_components=args.grad_tuner_components).to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    regularizer = ParameterRegularizer(device)
+    if args.resume_state:
+        checkpoint = load_model_weights(args.resume_state, model, device)
+        load_regularizer_state(checkpoint, regularizer, device)
+        print(f"[checkpoint] resumed {args.resume_state}", flush=True)
+    configure_trainable_parameters(model, args.trainable_scope)
+    trainable_parameters = [param for param in model.parameters() if param.requires_grad]
+    if not trainable_parameters:
+        raise ValueError(f"No trainable parameters for trainable scope: {args.trainable_scope}")
+    optimizer = torch.optim.AdamW(trainable_parameters, lr=args.lr, weight_decay=args.weight_decay)
     scheduler_t_max = args.scheduler_t_max or args.epochs_per_task * len(args.tasks)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer,
@@ -243,7 +291,6 @@ def main():
         eta_min=args.lr * 0.01,
     )
     perceptual = None if args.no_perceptual else VGGPerceptualLoss().to(device)
-    regularizer = ParameterRegularizer(device)
     scaler = build_grad_scaler(device, args.amp)
 
     metrics_path = os.path.join(args.output_dir, "metrics.csv")
@@ -252,7 +299,8 @@ def main():
         json.dump(vars(args), handle, indent=2, sort_keys=True)
     global_epoch = 0
 
-    for task_index, task in enumerate(args.tasks):
+    for local_task_index, task in enumerate(args.tasks):
+        task_index = args.initial_task_index + local_task_index
         train_loader, eval_loader = build_loaders(args, task)
         best_metric = -1.0
 
