@@ -2,6 +2,12 @@
 
 This repository contains the release implementation for **Prompting Rain Off: Evolving Compact Dual Prompts for Continual De-Raining**.
 
+<p align="center">
+  <img src="assets/screenshots/prompting-rain-off-page.png" alt="Prompting Rain Off public project page screenshot" width="900">
+</p>
+
+<sub>Image source: public Prompting Rain Off project page screenshot, [https://starymoon.github.io/Prompting-Rain-Off/](https://starymoon.github.io/Prompting-Rain-Off/). Captured on 2026-07-02.</sub>
+
 The release training path is centered on:
 
 - `net/ecodpl_promptir.py`: EcoDPL model with image prompts, feature prompts, P-Fuser, frequency tables, and Grad-Tuner.
